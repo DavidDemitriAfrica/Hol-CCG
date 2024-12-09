@@ -1,4 +1,9 @@
+# L95 Final Paper Repo
+
+Below is the unedited readme for the holographic CCG parser. I will update this later.
+
 # Holographic CCG (Hol-CCG)
+
 This is the Python implementation of [Holographic CCG Parsing](https://aclanthology.org/2023.acl-long.15/) at ACL2023.
 
 <img src="holccg.svg" width="500px">
