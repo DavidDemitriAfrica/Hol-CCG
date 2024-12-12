@@ -3,7 +3,7 @@ import argparse
 from utils import load, convert_content
 import torch
 from utils import circular_correlation, circular_convolution, shuffled_circular_convolution
-from torchtext.vocab import Vocab
+from torchtext.vocab import vocab
 from holccg import HolCCG
 from typing import List, Dict, Tuple
 
@@ -157,8 +157,8 @@ class Cell:
 class SpanParser:
     def __init__(
             self,
-            word_category_vocab: Vocab,
-            phrase_category_vocab: Vocab,
+            word_category_vocab: vocab,
+            phrase_category_vocab: vocab,
             head_info: dict,
             rule_counter: dict,
             holccg: HolCCG,
@@ -170,9 +170,9 @@ class SpanParser:
 
         Parameters
         ----------
-        word_category_vocab : Vocab
+        word_category_vocab : vocab
             word category vocabulary
-        phrase_category_vocab : Vocab
+        phrase_category_vocab : vocab
             phrase category vocabulary
         head_info : dict
             head information depends on each combinatory rule
