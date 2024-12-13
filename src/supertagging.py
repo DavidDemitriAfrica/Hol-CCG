@@ -109,11 +109,11 @@ def main():
             super_tags = []
             for idx in range(word_cat_prob.shape[0]):
                 # add top probability category
-                temp = [[word_category_vocab.itos[predict_cat_id[idx, 0]].split('-->')[0],
+                temp = [[word_category_vocab.get_itos()[predict_cat_id[idx, 0]].split('-->')[0],
                         word_cat_prob[idx, predict_cat_id[idx, 0]].item()]]
                 for cat_id in predict_cat_id[idx, 1:]:
                     if word_cat_prob[idx, cat_id] > args.stag_threshold:
-                        temp.append([word_category_vocab.itos[cat_id].split('-->')[0],
+                        temp.append([word_category_vocab.get_itos()[cat_id].split('-->')[0],
                                     word_cat_prob[idx, cat_id].item()])
                     else:
                         break

@@ -245,7 +245,7 @@ class SpanParser:
             vector = word_vectors[idx]
             word_probs = word_probs_list[idx]
             top_cat_id = word_predict_cats[idx, 0]
-            top_cat = self.word_category_vocab.itos[top_cat_id]
+            top_cat = self.word_category_vocab.get_itos()[top_cat_id]
             top_category = Category(
                 cell_id=(idx, idx + 1),
                 cat=top_cat,
