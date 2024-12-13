@@ -113,7 +113,7 @@ def evaluate_stag(tree_list: List[Tree], holccg: HolCCG) -> float:
                     predict_idx = torch.argmax(predict_prob, dim=-1)
                     num_word += 1
                     if predict_idx != 0:
-                        predict_cat = word_category_vocab.itos[predict_idx]
+                        predict_cat = word_category_vocab.get_itos()[predict_idx]
                         predict_prime_cat = predict_cat.split('-->')[0]
                         if predict_prime_cat == node.prime_category:
                             num_correct_word += 1

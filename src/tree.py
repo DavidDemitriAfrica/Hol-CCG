@@ -1,4 +1,4 @@
-from torchtext.vocab import Vocab
+from torchtext.vocab import vocab, build_vocab_from_iterator
 from collections import Counter
 import random
 from tqdm import tqdm
@@ -235,12 +235,12 @@ class TreeList:
             self,
             path_to_tree_list: str,
             type: str,
-            word_category_vocab: Vocab = None,
-            phrase_category_vocab: Vocab = None,
+            word_category_vocab: vocab = None,
+            phrase_category_vocab: vocab = None,
             head_info: dict = None,
             min_word_category: int = 0,
             min_phrase_category: int = 0,
-            device: torch.device = torch.device('cuda')) -> None:
+            device: torch.device = None) -> None:
         """class for tree list
 
         Parameters
@@ -249,9 +249,9 @@ class TreeList:
             path to preprocessd tree list
         type : str
             type of tree list, 'train' or 'dev' or 'test'
-        word_category_vocab : Vocab, optional
+        word_category_vocab : vocab, optional
             vocabulary for word category, by default None
-        phrase_category_vocab : Vocab, optional
+        phrase_category_vocab : vocab, optional
             vocabulary for phrase category, by default None
         head_info : dict, optional
             dictionary of head information, by default None
@@ -260,19 +260,26 @@ class TreeList:
         min_phrase_category : int, optional
             minimum frequency of phrase category, by default 0
         device : torch.device, optional
-            device to use, by default torch.device('cuda')
+            device to use, by default None
         """
+        # Handle device selection more robustly
+        if device is None:
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        else:
+            self.device = device
+        
         self.type = type
-        self.device = device
         self.min_word_category = min_word_category
         self.min_phrase_category = min_phrase_category
         self.set_tree_list(path_to_tree_list)
+        
         if type == 'train':
             self.set_vocab_and_head()
         else:
             self.word_category_vocab = word_category_vocab
             self.phrase_category_vocab = phrase_category_vocab
             self.head_info = head_info
+        
         self.set_category_id()
 
     def set_tree_list(self, path_to_tree_list: str) -> None:
@@ -324,14 +331,14 @@ class TreeList:
                             head_info_temp[rule] = [0, 0]
                         head_info_temp[rule][node.head] += 1
                     phrase_category_counter[node.category] += 1
-        self.word_category_vocab = Vocab(
+        self.word_category_vocab = build_vocab_from_iterator(
             word_category_counter,
             min_freq=self.min_word_category,
-            specials=['<unk>'])
-        self.phrase_category_vocab = Vocab(
+            specials=["<unk>"])
+        self.phrase_category_vocab = build_vocab_from_iterator(
             phrase_category_counter,
             min_freq=self.min_phrase_category,
-            specials=['<unk>'])
+            specials=["<unk>"])
         self.head_info = {}
         for k, v in head_info_temp.items():
             # when left head is majority
@@ -346,12 +353,22 @@ class TreeList:
         """
         word_category_vocab = self.word_category_vocab
         phrase_category_vocab = self.phrase_category_vocab
+        
         for tree in self.tree_list:
             for node in tree.node_list:
-                if node.is_leaf:
-                    node.category_id = word_category_vocab[node.category]
-                else:
-                    node.category_id = phrase_category_vocab[node.category]
+                try:
+                    if node.is_leaf:
+                        # Use get method with a default 'unk' index to handle unknown tokens
+                        node.category_id = word_category_vocab[node.category]
+                    else:
+                        node.category_id = phrase_category_vocab[node.category]
+                except (KeyError, RuntimeError):
+                    # If token is not in vocab, assign the UNK token index
+                    if node.is_leaf:
+                        node.category_id = word_category_vocab['<unk>']
+                    else:
+                        node.category_id = phrase_category_vocab['<unk>']
+            
             tree.set_node_composition_info()
             tree.set_original_position_of_leaf_node()
 

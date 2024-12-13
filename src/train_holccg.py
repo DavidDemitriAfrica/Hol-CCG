@@ -4,6 +4,7 @@ from evaluation_functions import evaluate_stag, evaluate_batch_list
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.cuda.amp import autocast, GradScaler
 from tree import Tree
 from holccg import HolCCG
 from tqdm import tqdm
@@ -12,6 +13,7 @@ import wandb
 import datetime
 import argparse
 from typing import List, Tuple
+import gc
 
 
 def arg_parse():
@@ -29,7 +31,7 @@ def arg_parse():
             'roberta-large'
         ],
         type=str,
-        default='roberta-large', help='pretrained text encoder')
+        default='roberta-base', help='pretrained text encoder')
     parser.add_argument('--phrase_loss_weight', type=float, default=1.0, help='weight of phrase loss')
     parser.add_argument('--span_loss_weight', type=float, default=1.0, help='weight of span loss')
     parser.add_argument('--normalize', choices=['real', 'complex'], default='real', help='normalize type')
@@ -49,9 +51,9 @@ def arg_parse():
     parser.add_argument('--dropout', type=float, default=0.2, help='dropout rate')
     parser.add_argument(
         '--device',
-        type=torch.device,
-        default=torch.device('cuda'),
-        help='device to use for training')
+        type=str,
+        default='cuda',
+        help='device to use for training (cpu or cuda)')
     parser.add_argument('--wandb', action='store_true', help='use wandb for logging')
 
     args = parser.parse_args()
@@ -102,6 +104,7 @@ def build_encoder_and_tokenizer(encoder_name: str) -> Tuple[nn.Module, nn.Module
         model_dim = 768
     elif 'large' in encoder_name:
         model_dim = 1024
+    encoder.gradient_checkpointing_enable()
     return encoder, tokenizer, model_dim
 
 
@@ -153,8 +156,8 @@ def train():
 
     # the number of word category and phrase category
     # these are used for building HolCCG's syntactic classifier
-    num_word_cat = len(train_tree_list.word_category_vocab.stoi)
-    num_phrase_cat = len(train_tree_list.phrase_category_vocab.stoi)
+    num_word_cat = len(train_tree_list.word_category_vocab.get_stoi())
+    num_phrase_cat = len(train_tree_list.phrase_category_vocab.get_stoi())
 
     # build HolCCG
     holccg = HolCCG(
@@ -187,6 +190,10 @@ def train():
     if args.wandb:
         log_stat_to_wandb(dev_stat, 'dev', 0)
 
+    scaler = GradScaler()
+
+    accumulation_steps = 4 
+
     for epoch in range(1, args.epochs + 1):
         holccg.train()
         train_batch_list = train_tree_list.make_batch(args.batch_size)
@@ -194,39 +201,66 @@ def train():
         epoch_phrase_loss = 0.0
         epoch_span_loss = 0.0
         num_batch = 0
+
+        optimizer.zero_grad()
         with tqdm(total=len(train_batch_list), unit="batch") as pbar:
             pbar.set_description(f"Epoch[{epoch}/{args.epochs}]")
-            for batch in train_batch_list:
-                optimizer.zero_grad()
-                word_output, phrase_output, span_output, word_label, phrase_label, span_label = holccg(
-                    batch)
-                word_loss = criteria(word_output, word_label)
-                phrase_loss = criteria(phrase_output, phrase_label)
-                span_loss = criteria(span_output, span_label)
+            for i, batch in enumerate(train_batch_list):
+                if args.device == 'cuda':
+                    autocast_enabled = True
+                else:
+                    autocast_enabled = False
 
-                loss_to_backward = word_loss + args.phrase_loss_weight * phrase_loss + args.span_loss_weight * span_loss
-                loss_to_backward.backward()
-                optimizer.step()
+                with autocast(enabled=autocast_enabled):
+                    word_output, phrase_output, span_output, word_label, phrase_label, span_label = holccg(batch)
+                    word_loss = criteria(word_output, word_label)
+                    phrase_loss = criteria(phrase_output, phrase_label)
+                    span_loss = criteria(span_output, span_label)
+                    
+                    # Divide the total loss by accumulation_steps
+                    loss = word_loss + args.phrase_loss_weight * phrase_loss + args.span_loss_weight * span_loss
+                    loss = loss / accumulation_steps
+
+                scaler.scale(loss).backward()
 
                 epoch_word_loss += word_loss.item()
                 epoch_phrase_loss += phrase_loss.item()
                 epoch_span_loss += span_loss.item()
 
                 num_batch += 1
-                pbar.set_postfix({"word-loss": epoch_word_loss / num_batch,
-                                  "phrase-loss": epoch_phrase_loss / num_batch,
-                                  "span-loss": epoch_span_loss / num_batch})
+                pbar.set_postfix({
+                    "word-loss": epoch_word_loss / num_batch,
+                    "phrase-loss": epoch_phrase_loss / num_batch,
+                    "span-loss": epoch_span_loss / num_batch
+                })
                 pbar.update(1)
 
+                # Only step the optimizer every 'accumulation_steps' batches
+                if (i + 1) % accumulation_steps == 0:
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad()
+
+            # In case the number of batches is not divisible by accumulation_steps,
+            # perform an optimizer step at the end of the epoch if needed
+            if len(train_batch_list) % accumulation_steps != 0:
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+
+        # Evaluation step as before
         holccg.eval()
-        with torch.no_grad():
+        with torch.inference_mode():
             dev_stat = evaluate_batch_list(dev_batch_list, holccg)
             dev_tree_list.set_vector(holccg)
             stag_acc = evaluate_stag(dev_tree_list, holccg)
         dev_stat['stag_acc'] = stag_acc
-        torch.save(holccg, path_to_save_trained_model)
+        torch.save(holccg.state_dict(), path_to_save_trained_model)
         if args.wandb:
             log_stat_to_wandb(dev_stat, 'dev', epoch)
+        torch.cuda.empty_cache()
+        gc.collect()
+
 
     # load and prepare batch of test_tree_list
     test_tree_list = load(os.path.join(args.path_to_tree_list, 'test_tree_list.pickle'))
@@ -245,6 +279,8 @@ def train():
 
     if args.wandb:
         log_stat_to_wandb(test_stat, 'test', 0)
+    torch.cuda.empty_cache()
+    gc.collect()
 
 
 if __name__ == '__main__':
