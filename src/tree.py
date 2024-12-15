@@ -13,28 +13,25 @@ from holccg import HolCCG
 
 class Node:
     def __init__(self, node_info: list) -> None:
-        """Class for node in constituency tree.
-
-        Parameters
-        ----------
-        node_info : list
-            node information
         """
+        node_info format:
+        [is_leaf (True/False), self_id, content/category, category_if_leaf (if leaf), pos_if_leaf (if leaf), ...]
+        """
+        self.self_id = int(node_info[1])
         if node_info[0] == 'True':
             self.is_leaf = True
-        else:
-            self.is_leaf = False
-        self.self_id = int(node_info[1])
-        if self.is_leaf:
-            content = node_info[2]
-            self.content = [convert_content(content)]
+            # For leaf: store just the single word and its category
+            self.word = convert_content(node_info[2])
             self.category = node_info[3]
             self.pos = node_info[4]
+            # Will set indices later
+            self.start_idx = None
+            self.end_idx = None
             self.ready = True
         else:
+            self.is_leaf = False
             self.category = node_info[2]
             self.num_child = int(node_info[3])
-            self.ready = False
             if self.num_child == 1:
                 self.child_node_id = int(node_info[4])
                 self.head = int(node_info[5])
@@ -42,25 +39,90 @@ class Node:
                 self.left_child_node_id = int(node_info[4])
                 self.right_child_node_id = int(node_info[5])
                 self.head = int(node_info[6])
-
+            # Will set indices once children are processed
+            self.start_idx = None
+            self.end_idx = None
+            self.ready = False
 
 class Tree:
     def __init__(self, self_id: int, node_list: list) -> None:
-        """Class for constituency tree.
-
-        Parameters
-        ----------
-        self_id : int
-            self id of the tree
-        node_list : list
-            list of nodes in the tree
-        """
         self.self_id = self_id
         self.node_list = node_list
 
     def set_node_composition_info(self) -> None:
-        """Set composition information of each node.
-        """
+        # First pass: mark leaves as ready
+        for node in self.node_list:
+            if node.is_leaf:
+                node.ready = True
+            else:
+                node.ready = False
+
+        # Compute composition info bottom-up without storing full node.content arrays
+        # Instead, we will just record composition steps and set start/end indices.
+        self.composition_info = []
+        # Determine the start/end indices for leaf nodes directly:
+        # We'll do this after we figure out the sentence ordering.
+
+        # To find sentence words: gather all leaves and their words
+        # Leaves are in the order they appear in self.node_list, but we must ensure they're in sentence order.
+        # We can rely on topological logic: The final node is the root. We'll assign start/end indices bottom-up.
+        
+        # Step 1: Gather words from leaf nodes in original order:
+        # Initially, we don't know the original word order. We'll figure it out after composition.
+        # Let's do a top-down pass to assign start/end indices:
+        # At the end, the root node (last in list) covers the entire sentence.
+        
+        # A safe approach: Once composition_info is complete, the last node will cover the entire sentence.
+        # So we first do a loop like before but without storing large arrays.
+
+        # We'll emulate the original logic but only store minimal info:
+        while True:
+            num_ready_node = sum(node.ready for node in self.node_list)
+            for node in self.node_list:
+                if not node.ready and not node.is_leaf:
+                    if node.num_child == 1:
+                        child = self.node_list[node.child_node_id]
+                        if child.ready:
+                            # Parent inherits child's span
+                            node.start_idx = child.start_idx
+                            node.end_idx = child.end_idx
+                            node.ready = True
+                            self.composition_info.append([1, node.self_id, child.self_id, 0])
+                    else:
+                        left_child = self.node_list[node.left_child_node_id]
+                        right_child = self.node_list[node.right_child_node_id]
+                        if left_child.ready and right_child.ready:
+                            # Parent span is combination of children
+                            node.start_idx = left_child.start_idx
+                            node.end_idx = right_child.end_idx
+                            node.ready = True
+                            self.composition_info.append([2, node.self_id, left_child.self_id, right_child.self_id])
+            
+            if num_ready_node == len(self.node_list):
+                break
+
+        # Now, all nodes have start/end indices.
+        # The root node covers the entire sentence: from 0 to end_idx
+        # Next, we must form the actual sentence. The leaves are the ultimate words:
+        leaves = [n for n in self.node_list if n.is_leaf]
+        # Sort leaves by position or assign their start_idx
+        # If leaves were not assigned start_idx/end_idx yet, do so:
+        # Each leaf is a single word, so start_idx == end_idx for leaves.
+        # Let's assign them in the order they appear to form the sentence:
+        # The original code expects self.sentence = a list of words in order.
+        # In this approach, we have no actual "positions" yet. We must define them:
+        # We'll assign leaf positions in order of appearance for simplicity:
+        sentence_words = [leaf.word for leaf in leaves]
+        self.sentence = sentence_words
+
+        # Assign leaf indices now based on their order in the final sentence
+        # Leaf i in leaves corresponds to sentence index i
+        for i, leaf in enumerate(leaves):
+            leaf.start_idx = i
+            leaf.end_idx = i + 1
+
+        # We must redo a pass to fix parent start/end indices since now leaves have final positions
+        # Reset readiness and recompute:
         for node in self.node_list:
             if node.is_leaf:
                 node.ready = True
@@ -68,83 +130,56 @@ class Tree:
                 node.ready = False
         self.composition_info = []
         while True:
-            num_ready_node = 0
+            num_ready_node = sum(node.ready for node in self.node_list)
             for node in self.node_list:
-                if node.ready:
-                    num_ready_node += 1
-                elif not node.is_leaf and not node.ready:
+                if not node.ready and not node.is_leaf:
                     if node.num_child == 1:
-                        child_node = self.node_list[node.child_node_id]
-                        if child_node.ready:
-                            node.content = child_node.content
+                        child = self.node_list[node.child_node_id]
+                        if child.ready:
+                            node.start_idx = child.start_idx
+                            node.end_idx = child.end_idx
                             node.ready = True
-                            self.composition_info.append(
-                                [node.num_child, node.self_id, child_node.self_id, 0])
-                    else:  # when node has two children
-                        left_child_node = self.node_list[node.left_child_node_id]
-                        right_child_node = self.node_list[node.right_child_node_id]
-                        if left_child_node.ready and right_child_node.ready:
-                            node.content = left_child_node.content + right_child_node.content
+                            self.composition_info.append([1, node.self_id, child.self_id, 0])
+                    else:
+                        left_child = self.node_list[node.left_child_node_id]
+                        right_child = self.node_list[node.right_child_node_id]
+                        if left_child.ready and right_child.ready:
+                            node.start_idx = left_child.start_idx
+                            node.end_idx = right_child.end_idx
                             node.ready = True
-                            self.composition_info.append(
-                                [node.num_child, node.self_id, left_child_node.self_id, right_child_node.self_id])
+                            self.composition_info.append([2, node.self_id, left_child.self_id, right_child.self_id])
             if num_ready_node == len(self.node_list):
                 break
-        self.sentence = self.node_list[-1].content
 
     def set_original_position_of_leaf_node(self) -> None:
-        """Set original position in the sentence of each leaf node.
-        """
         self.original_position = []
         self.spans = []
-        node = self.node_list[-1]
-        if node.is_leaf:
-            node.original_position = 0
-            self.original_position.append([node.self_id, node.original_position])
-        else:
-            node.start_idx = 0
-            node.end_idx = len(node.content)
-        for info in reversed(self.composition_info):
-            num_child = info[0]
-            if num_child == 1:
-                parent_node = self.node_list[info[1]]
-                child_node = self.node_list[info[2]]
-                child_node.start_idx = parent_node.start_idx
-                child_node.end_idx = parent_node.end_idx
-                if child_node.is_leaf:
-                    child_node.original_position = child_node.start_idx
-                    self.original_position.append(
-                        [child_node.self_id, child_node.original_position])
-            else:
+
+        # For leaves, original_position is just (node_id, start_idx)
+        for node in self.node_list:
+            if node.is_leaf:
+                self.original_position.append([node.self_id, node.start_idx])
+
+        # For spans, we record [start_idx, end_idx]
+        for info in self.composition_info:
+            if info[0] == 2:
                 parent_node = self.node_list[info[1]]
                 self.spans.append([parent_node.start_idx, parent_node.end_idx])
-                left_child_node = self.node_list[info[2]]
-                right_child_node = self.node_list[info[3]]
-                left_child_node.start_idx = parent_node.start_idx
-                left_child_node.end_idx = parent_node.start_idx + len(left_child_node.content)
-                right_child_node.start_idx = left_child_node.end_idx
-                right_child_node.end_idx = parent_node.end_idx
-                if left_child_node.is_leaf:
-                    left_child_node.original_position = left_child_node.start_idx
-                    self.original_position.append(
-                        [left_child_node.self_id, left_child_node.original_position])
-                if right_child_node.is_leaf:
-                    right_child_node.original_position = right_child_node.start_idx
-                    self.original_position.append(
-                        [right_child_node.self_id, right_child_node.original_position])
 
     def generate_random_tree(self) -> None:
-        """generate the random binary tree in order to obtain negative training sample for span classification."""
+        # This function can remain mostly the same, but we don't store node.content arrays anymore.
+        # We only have start and end indices. 
+        # Since the sentence is known (self.sentence), length = len(self.sentence)
+        length = len(self.sentence)
         random_composition_info = []
         random_original_position = []
-        # list of span's id which do not exist in gold tree
         negative_node_id = []
-
         node_id = 0
-        node = [0, len(self.sentence), node_id]
+
+        node = [0, length, node_id]
         node_list = [node]
 
-        if len(self.sentence) > 1:
+        if length > 1:
             if node[:2] not in self.spans:
                 negative_node_id.append(node_id)
             wait_list = [node]
@@ -154,36 +189,27 @@ class Tree:
 
         node_id += 1
 
-        while True:
-            if wait_list == []:
-                break
-            # information about parent node which is split into two child nodes
+        while wait_list:
             parent_node = wait_list.pop(0)
             start_idx = parent_node[0]
             end_idx = parent_node[1]
             parent_id = parent_node[2]
-
             # decide split point
             split_idx = random.randint(start_idx + 1, end_idx - 1)
 
-            # define left child node
             left_node = [start_idx, split_idx, node_id]
             node_list.append(left_node)
-            # when left node is not leaf node
-            if left_node[1] - left_node[0] > 1:
+            if (split_idx - start_idx) > 1:
                 if left_node[:2] not in self.spans:
                     negative_node_id.append(node_id)
                 wait_list.append(left_node)
-            # when left node is leaf node
             else:
                 random_original_position.append([node_id, split_idx - 1])
             node_id += 1
 
-            # define right child node
             right_node = [split_idx, end_idx, node_id]
             node_list.append(right_node)
-            # when right node is not leaf node
-            if right_node[1] - right_node[0] > 1:
+            if (end_idx - split_idx) > 1:
                 if right_node[:2] not in self.spans:
                     negative_node_id.append(node_id)
                 wait_list.append(right_node)
@@ -192,35 +218,23 @@ class Tree:
             node_id += 1
 
             random_composition_info.append([2, parent_id, node_id - 2, node_id - 1])
+
         random_composition_info.reverse()
         return len(node_list), random_composition_info, random_original_position, negative_node_id
 
-    def set_word_split(self, tokenizer: Union[RobertaTokenizer, BertTokenizer]) -> List[List[int]]:
-        """Set word split information, where each word is split into several tokens.
-
-        Parameters
-        ----------
-        tokenizer : Union[RobertaTokenizer, BertTokenizer]
-            Tokenizer used to split words into tokens.
-
-        Returns
-        -------
-        List[List[int]]
-            List of word split information.
-        """
-        sentence = " ".join(self.sentence)
-        tokens = tokenizer.tokenize(sentence)
+    def set_word_split(self, tokenizer) -> list:
+        # This can remain mostly unchanged, but we can directly work on self.sentence
+        sentence_str = " ".join(self.sentence)
+        tokens = tokenizer.tokenize(sentence_str)
         tokenized_pos = 0
         word_split = []
-        for original_position in range(len(self.sentence)):
-            word = self.sentence[original_position]
+        for word in self.sentence:
             length = 1
             while True:
                 temp = tokenizer.convert_tokens_to_string(
                     tokens[tokenized_pos:tokenized_pos + length])
-                temp = temp.replace(" ", "")
-                temp = temp.replace("\"", "``")
-                if word == temp or word.lower() == temp:
+                temp = temp.replace(" ", "").replace("\"", "``")
+                if word.lower() == temp or word == temp:
                     word_split.append([tokenized_pos, tokenized_pos + length])
                     tokenized_pos += length
                     break

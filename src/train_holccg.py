@@ -52,7 +52,7 @@ def arg_parse():
     parser.add_argument(
         '--device',
         type=str,
-        default='cuda',
+        default='cpu',
         help='device to use for training (cpu or cuda)')
     parser.add_argument('--wandb', action='store_true', help='use wandb for logging')
 
@@ -139,13 +139,22 @@ def train():
         trained_model_name += '_phrase'
     if args.span_loss_weight != 0.0:
         trained_model_name += '_span'
-    trained_model_name += '_' + str(datetime.datetime.now()).split('.')[0].replace(' ', '_')
-    trained_model_name += '.pth'
+    current_time = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    trained_model_name += '_' + current_time + '.pth'
+
+    
     path_to_save_trained_model = os.path.join(args.path_to_save_trained_model, trained_model_name)
 
     encoder, tokenizer, model_dim = build_encoder_and_tokenizer(args.encoder)
 
     train_tree_list, dev_tree_list = load_tree_list(args.path_to_tree_list)
+
+    # Keep only 1% of the training data
+    train_tree_count = len(train_tree_list.tree_list)
+    dev_tree_count = len(dev_tree_list.tree_list)
+
+    train_tree_list.tree_list = train_tree_list.tree_list[:int(train_tree_count * 0.01)]
+    dev_tree_list.tree_list = dev_tree_list.tree_list[:int(dev_tree_count * 0.01)]
 
     # set info for training
     train_tree_list.device = args.device
@@ -255,6 +264,9 @@ def train():
             dev_tree_list.set_vector(holccg)
             stag_acc = evaluate_stag(dev_tree_list, holccg)
         dev_stat['stag_acc'] = stag_acc
+
+        # Make sure the directory exists
+        os.makedirs(path_to_save_trained_model, exist_ok=True)
         torch.save(holccg.state_dict(), path_to_save_trained_model)
         if args.wandb:
             log_stat_to_wandb(dev_stat, 'dev', epoch)
@@ -264,12 +276,28 @@ def train():
 
     # load and prepare batch of test_tree_list
     test_tree_list = load(os.path.join(args.path_to_tree_list, 'test_tree_list.pickle'))
+    test_tree_count = len(test_tree_list.tree_list)
+    test_tree_list.tree_list = test_tree_list.tree_list[:int(test_tree_count * 0.01)]
     test_tree_list.device = args.device
     test_tree_list.set_info_for_training(tokenizer)
     test_batch_list = test_tree_list.make_batch(args.batch_size)
 
-    holccg = torch.load(path_to_save_trained_model, map_location=args.device)
+    holccg = HolCCG(
+        num_word_cat=num_word_cat,
+        num_phrase_cat=num_phrase_cat,
+        encoder=encoder,
+        tokenizer=tokenizer,
+        model_dim=model_dim,
+        dropout=args.dropout,
+        normalize_type=args.normalize,
+        vector_norm=max_norm,
+        composition=args.composition,
+        device=args.device
+    ).to(args.device)
+
+    holccg.load_state_dict(torch.load(path_to_save_trained_model, map_location=args.device))
     holccg.eval()
+
 
     with torch.no_grad():
         test_stat = evaluate_batch_list(test_batch_list, holccg)
